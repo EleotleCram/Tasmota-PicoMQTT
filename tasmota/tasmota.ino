@@ -32,6 +32,8 @@
 #include "include/i18n.h"                   // Language support configured by my_user_config.h
 #include "include/tasmota_template.h"       // Hardware configuration
 
+#include <PicoMQTT.h>
+
 // ------------------------------------------------------------------------------------------
 // If IPv6 is not support by the underlying esp-idf, disable it
 // ------------------------------------------------------------------------------------------
@@ -705,6 +707,8 @@ void setup(void) {
       }
       AddLog(LOG_LEVEL_INFO, PSTR("FRC: " D_LOG_SOME_SETTINGS_RESET " (%d)"), RtcReboot.fast_reboot_count);
     }
+
+    startPicoMQTT();
   }
 
   memcpy_P(TasmotaGlobal.version, VERSION_MARKER, 1);  // Dummy for compiler saving VERSION_MARKER
@@ -932,4 +936,48 @@ void loop(void) {
   uint32_t loops_per_second = 1000 / loop_delay;   // We need to keep track of this many loops per second
   uint32_t this_cycle_ratio = 100 * my_activity / loop_delay;
   TasmotaGlobal.loop_load_avg = TasmotaGlobal.loop_load_avg - (TasmotaGlobal.loop_load_avg / loops_per_second) + (this_cycle_ratio / loops_per_second); // Take away one loop average away and add the new one
+}
+
+/////////////////////////// PicoMQTT //////////////////////////////
+
+TaskHandle_t PicoMQTTTask; // Task handle for the PicoMQTT task
+
+void startPicoMQTT() {
+  pinMode(LED_BUILTIN, OUTPUT); // Set the LED pin as an output
+  // Create the PicoMQTT task
+  xTaskCreatePinnedToCore(runPicoMQTT,     // Task function
+                          "PicoMQTTTask",  // Task name
+                          10000,           // Stack size (words, not bytes)
+                          NULL,            // Task input parameter
+                          1,               // Priority (0 is the lowest priority)
+                          &PicoMQTTTask,   // Task handle
+                          1                // Core to run the task on (0 or 1)
+  );
+}
+
+PicoMQTT::Server mqtt;
+
+void runPicoMQTT(void *pvParameters) {
+  (void)pvParameters; // Unused parameter
+
+  bool wifiConnected = false;
+
+  while (true) {
+    if (WiFi.status() == WL_CONNECTED) {
+      if (!wifiConnected) { // WiFi was just connected
+        wifiConnected = true;
+        mqtt.begin(); // Start PicoMQTT
+        AddLog(LOG_LEVEL_INFO, PSTR("PMQ: PicoMQTT started"));
+      }
+      // Update PicoMQTT
+      mqtt.loop();
+    } else {
+      if (wifiConnected) { // WiFi was just disconnected
+        wifiConnected = false;
+        mqtt.stop(); // Stop PicoMQTT
+        AddLog(LOG_LEVEL_INFO, PSTR("PMQ: PicoMQTT stopped (No WiFi)"));
+      }
+    }
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
 }
